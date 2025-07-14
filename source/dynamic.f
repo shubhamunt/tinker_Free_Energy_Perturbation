@@ -18,6 +18,7 @@ c     any of several possible integration methods
 c
 c
       program dynamic
+      use sizes
       use atoms
       use bath
       use bndstr
@@ -27,278 +28,467 @@ c
       use keys
       use mdstuf
       use potent
+      use solute
       use stodyn
       use usage
       implicit none
-      integer i,next,mode
-      integer istep,nstep
-      real*8 dt,dtsave
+      integer i,istep,nstep
+      integer mode,next
+      real*8 dt,dtdump
       logical exist
       character*20 keyword
-      character*240 record
-      character*240 string
-c
-c
-c     set up the structure and molecular mechanics calculation
-c
+      character*120 record
+      character*120 string
+
+      ! Variables for key file management
+      character*120 pert_k(25000), fpert_k(25000), bpert_k(25000)
+      integer pert_nk, fpert_nk, bpert_nk
+      logical pert_exist, fpert_exist, bpert_exist
+
+c     Load key files into memory if they exist
+      inquire(file='pert.key', exist=pert_exist)
+      if (pert_exist) then
+         call loadk('pert.key', pert_k, pert_nk)
+      endif
+
+      inquire(file='fpert.key', exist=fpert_exist)
+      if (fpert_exist) then
+         call loadk('fpert.key', fpert_k, fpert_nk)
+      endif
+
+      inquire(file='bpert.key', exist=bpert_exist)
+      if (bpert_exist) then
+         call loadk('bpert.key', bpert_k, bpert_nk)
+      endif
+
+c     Set up the structure and mechanics calculation
       call initial
       call getxyz
       call mechanic
-c
-c     initialize the temperature, pressure and coupling baths
-c
+
+c     Initialize temperature, pressure and coupling baths
       kelvin = 0.0d0
       atmsph = 0.0d0
       isothermal = .false.
       isobaric = .false.
-c
-c     check for keywords containing any altered parameters
-c
+
+c     Check for keywords with altered parameters
       integrate = 'BEEMAN'
       do i = 1, nkey
          next = 1
          record = keyline(i)
-         call gettext (record,keyword,next)
-         call upcase (keyword)
-         string = record(next:240)
+         call gettext(record,keyword,next)
+         call upcase(keyword)
+         string = record(next:120)
          if (keyword(1:11) .eq. 'INTEGRATOR ') then
-            call getword (record,integrate,next)
-            call upcase (integrate)
-         end if
-      end do
-c
-c     initialize the simulation length as number of time steps
-c
+            call getword(record,integrate,next)
+            call upcase(integrate)
+         endif
+      enddo
+
+c     Initialize simulation length (time steps)
       nstep = -1
-      call nextarg (string,exist)
-      if (exist)  read (string,*,err=10,end=10)  nstep
+      call nextarg(string,exist)
+      if (exist) read(string,*,err=10,end=10) nstep
    10 continue
-      do while (nstep .lt. 0)
-         write (iout,20)
-   20    format (/,' Enter the Number of Dynamics Steps to be',
-     &              ' Taken :  ',$)
-         read (input,30,err=40)  nstep
-   30    format (i10)
-         if (nstep .lt. 0)  nstep = 0
+      dowhile (nstep .lt. 0)
+         write(iout,20)
+   20    format(/,' Enter Number of Dynamics Steps :  ',$)
+         read(input,30,err=40) nstep
+   30    format(i10)
+         if (nstep .lt. 0) nstep = 0
    40    continue
-      end do
-c
-c     get the length of the dynamics time step in picoseconds
-c
+      enddo
+
+c     Get time step length in picoseconds
       dt = -1.0d0
-      call nextarg (string,exist)
-      if (exist)  read (string,*,err=50,end=50)  dt
+      call nextarg(string,exist)
+      if (exist) read(string,*,err=50,end=50) dt
    50 continue
       do while (dt .lt. 0.0d0)
-         write (iout,60)
-   60    format (/,' Enter the Time Step Length in Femtoseconds',
-     &              ' [1.0] :  ',$)
-         read (input,70,err=80)  dt
-   70    format (f20.0)
-         if (dt .le. 0.0d0)  dt = 1.0d0
+         write(iout,60)
+   60    format(/,' Enter Time Step Length (fs) [1.0] :  ',$)
+         read(input,70,err=80) dt
+   70    format(f20.0)
+         if (dt .le. 0.0d0) dt = 1.0d0
    80    continue
-      end do
+      enddo
       dt = 0.001d0 * dt
-c
-c     enforce bounds on thermostat and barostat coupling times
-c
+
+c     Enforce bounds on coupling times
       tautemp = max(tautemp,dt)
       taupres = max(taupres,dt)
-c
-c     set the time between trajectory snapshot coordinate saves
-c
-      dtsave = -1.0d0
-      call nextarg (string,exist)
-      if (exist)  read (string,*,err=90,end=90)  dtsave
+
+c     Set time between coordinate dumps
+      dtdump = -1.0d0
+      call nextarg(string,exist)
+      if (exist) read(string,*,err=90,end=90) dtdump
    90 continue
-      do while (dtsave .lt. 0.0d0)
-         write (iout,100)
-  100    format (/,' Enter Time between Saves in Picoseconds',
-     &              ' [0.1] :  ',$)
-         read (input,110,err=120)  dtsave
-  110    format (f20.0)
-         if (dtsave .le. 0.0d0)  dtsave = 0.1d0
+      do while (dtdump .lt. 0.0d0)
+         write(iout,100)
+  100    format(/,' Time between Dumps (ps) [0.1] :  ',$)
+         read(input,110,err=120) dtdump
+  110    format(f20.0)
+         if (dtdump .le. 0.0d0) dtdump = 0.1d0
   120    continue
-      end do
-      iwrite = nint(dtsave/dt)
-c
-c     get choice of statistical ensemble for periodic system
-c
+      enddo
+      iwrite = nint(dtdump/dt)
+
+c     Get ensemble choice for periodic system
       if (use_bounds) then
          mode = -1
-         call nextarg (string,exist)
-         if (exist)  read (string,*,err=130,end=130)  mode
+         call nextarg(string,exist)
+         if (exist) read(string,*,err=130,end=130) mode
   130    continue
          do while (mode.lt.1 .or. mode.gt.4)
-            write (iout,140)
-  140       format (/,' Available Statistical Mechanical Ensembles :',
-     &              //,4x,'(1) Microcanonical (NVE)',
-     &              /,4x,'(2) Canonical (NVT)',
-     &              /,4x,'(3) Isoenthalpic-Isobaric (NPH)',
-     &              /,4x,'(4) Isothermal-Isobaric (NPT)',
-     &              //,' Enter the Number of the Desired Choice',
-     &                 ' [1] :  ',$)
-            read (input,150,err=160)  mode
-  150       format (i10)
-            if (mode .le. 0)  mode = 1
+            write(iout,140)
+  140       format(/,' Available Ensembles:',//,4x,'(1) NVE',/,
+     &              4x,'(2) NVT',/,4x,'(3) NPH',/,4x,'(4) NPT',//,
+     &              ' Enter Choice [1] :  ',$)
+            read(input,150,err=160) mode
+  150       format(i10)
+            if (mode .le. 0) mode = 1
   160       continue
-         end do
+         enddo
          if (integrate.eq.'BUSSI' .or. integrate.eq.'NOSE-HOOVER'
      &                .or. integrate.eq.'GHMC') then
             if (mode .ne. 4) then
                mode = 4
-               write (iout,170)
-  170          format (/,' Switching to NPT Ensemble as Required',
-     &                    ' by Chosen Integrator')
-            end if
-         end if
+               write(iout,170)
+  170          format(/,' Switching to NPT Ensemble')
+            endif
+         endif
          if (mode.eq.2 .or. mode.eq.4) then
             isothermal = .true.
             kelvin = -1.0d0
-            call nextarg (string,exist)
-            if (exist)  read (string,*,err=180,end=180)  kelvin
+            call nextarg(string,exist)
+            if (exist) read(string,*,err=180,end=180) kelvin
   180       continue
-            do while (kelvin .le. 0.0d0)
-               write (iout,190)
-  190          format (/,' Enter the Desired Temperature in Degrees',
-     &                    ' K [298] :  ',$)
-               read (input,200,err=210)  kelvin
-  200          format (f20.0)
-               if (kelvin .le. 0.0d0)  kelvin = 298.0d0
+            do while (kelvin .lt. 0.0d0)
+               write(iout,190)
+  190          format(/,' Desired Temperature (K) [298] :  ',$)
+               read(input,200,err=210) kelvin
+  200          format(f20.0)
+               if (kelvin .le. 0.0d0) kelvin = 298.0d0
   210          continue
-            end do
-         end if
+            enddo
+         endif
          if (mode.eq.3 .or. mode.eq.4) then
             isobaric = .true.
             atmsph = -1.0d0
-            call nextarg (string,exist)
-            if (exist)  read (string,*,err=220,end=220)  atmsph
+            call nextarg(string,exist)
+            if (exist) read(string,*,err=220,end=220) atmsph
   220       continue
-            do while (atmsph .eq. -1.0d0)
-               write (iout,230)
-  230          format (/,' Enter the Desired Pressure in Atm',
-     &                    ' [1.0] :  ',$)
-               read (input,240,err=250)  atmsph
-  240          format (f20.0)
-               if (atmsph .eq. -1.0d0)  atmsph = 1.0d0
+            do while (atmsph .lt. 0.0d0)
+               write(iout,230)
+  230          format(/,' Desired Pressure (Atm) [1.0] :  ',$)
+               read(input,240,err=250) atmsph
+  240          format(f20.0)
+               if (atmsph .le. 0.0d0) atmsph = 1.0d0
   250          continue
-            end do
-         end if
-      end if
-c
-c     use constant energy or temperature for nonperiodic system
-c
+            enddo
+         endif
+      endif
+
+c     For nonperiodic systems
       if (.not. use_bounds) then
          mode = -1
-         call nextarg (string,exist)
-         if (exist)  read (string,*,err=260,end=260)  mode
+         call nextarg(string,exist)
+         if (exist) read(string,*,err=260,end=260) mode
   260    continue
          do while (mode.lt.1 .or. mode.gt.2)
-            write (iout,270)
-  270       format (/,' Available Simulation Control Modes :',
-     &              //,4x,'(1) Constant Total Energy Value (E)',
-     &              /,4x,'(2) Constant Temperature via Thermostat (T)',
-     &              //,' Enter the Number of the Desired Choice',
-     &                 ' [1] :  ',$)
-            read (input,280,err=290)  mode
-  280       format (i10)
-            if (mode .le. 0)  mode = 1
+            write(iout,270)
+  270       format(/,' Available Modes:',//,4x,'(1) Constant E',/,
+     &              4x,'(2) Constant T',//,' Enter Choice [1] :  ',$)
+            read(input,280,err=290) mode
+  280       format(i10)
+            if (mode .le. 0) mode = 1
   290       continue
-         end do
+         enddo
          if (mode .eq. 2) then
             isothermal = .true.
             kelvin = -1.0d0
-            call nextarg (string,exist)
-            if (exist)  read (string,*,err=300,end=300)  kelvin
+            call nextarg(string,exist)
+            if (exist) read(string,*,err=300,end=300) kelvin
   300       continue
-            do while (kelvin .le. 0.0d0)
-               write (iout,310)
-  310          format (/,' Enter the Desired Temperature in Degrees',
-     &                    ' K [298] :  ',$)
-               read (input,320,err=330)  kelvin
-  320          format (f20.0)
-               if (kelvin .le. 0.0d0)  kelvin = 298.0d0
+            do while (kelvin .lt. 0.0d0)
+               write(iout,310)
+  310          format(/,' Desired Temperature (K) [298] :  ',$)
+               read(input,320,err=330) kelvin
+  320          format(f20.0)
+               if (kelvin .le. 0.0d0) kelvin = 298.0d0
   330          continue
-            end do
-         end if
-      end if
-c
-c     perform the setup functions needed to run dynamics
-c
-      call mdinit (dt)
-c
-c     print out a header line for the dynamics computation
-c
+            enddo
+         endif
+      endif
+
+c     Initialize constraints and dynamics
+      call shakeup
+      call mdinit
+
+c     Print dynamics header
       if (integrate .eq. 'VERLET') then
-         write (iout,340)
-  340    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Velocity Verlet Algorithm')
-      else if (integrate .eq. 'BEEMAN') then
-         write (iout,350)
-  350    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Modified Beeman Algorithm')
-      else if (integrate .eq. 'BAOAB') then
-         write (iout,360)
-  360    format (/,' Constrained Stochastic Dynamics Trajectory',
-     &              ' via BAOAB Algorithm')
-      else if (integrate .eq. 'BUSSI') then
-         write (iout,370)
-  370    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Bussi-Parrinello NPT Algorithm')
-      else if (integrate .eq. 'NOSE-HOOVER') then
-         write (iout,380)
-  380    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Nose-Hoover NPT Algorithm')
+         write(iout,340)
+  340    format(/,' MD via Velocity Verlet')
       else if (integrate .eq. 'STOCHASTIC') then
-         write (iout,390)
-  390    format (/,' Stochastic Dynamics Trajectory via',
-     &              ' Velocity Verlet Algorithm')
+         write(iout,350)
+  350    format(/,' Stochastic Dynamics via Verlet')
+      else if (integrate .eq. 'BUSSI') then
+         write(iout,360)
+  360    format(/,' MD via Bussi-Parrinello NPT')
+      else if (integrate .eq. 'NOSE-HOOVER') then
+         write(iout,370)
+  370    format(/,' MD via Nose-Hoover NPT')
       else if (integrate .eq. 'GHMC') then
-         write (iout,400)
-  400    format (/,' Stochastic Dynamics Trajectory via',
-     &              ' Generalized Hybrid Monte Carlo')
+         write(iout,380)
+  380    format(/,' Stochastic via GHMC')
       else if (integrate .eq. 'RIGIDBODY') then
-         write (iout,410)
-  410    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Rigid Body Algorithm')
+         write(iout,390)
+  390    format(/,' MD via Rigid Body')
       else if (integrate .eq. 'RESPA') then
-         write (iout,420)
-  420    format (/,' Molecular Dynamics Trajectory via',
-     &              ' r-RESPA MTS Algorithm')
+         write(iout,400)
+  400    format(/,' MD via r-RESPA MTS')
       else
-         write (iout,430)
-  430    format (/,' Molecular Dynamics Trajectory via',
-     &              ' Modified Beeman Algorithm')
-      end if
-      flush (iout)
-c
-c     integrate equations of motion to take a time step
-c
+         write(iout,410)
+  410    format(/,' MD via Modified Beeman')
+      endif
+
+c     Integrate equations of motion
       do istep = 1, nstep
          if (integrate .eq. 'VERLET') then
-            call verlet (istep,dt)
-         else if (integrate .eq. 'BEEMAN') then
-            call beeman (istep,dt)
-         else if (integrate .eq. 'BAOAB') then
-            call baoab (istep,dt)
-         else if (integrate .eq. 'BUSSI') then
-            call bussi (istep,dt)
-         else if (integrate .eq. 'NOSE-HOOVER') then
-            call nose (istep,dt)
+            call verlet(istep,dt)
          else if (integrate .eq. 'STOCHASTIC') then
-            call sdstep (istep,dt)
+            call sdstep(istep,dt)
+         else if (integrate .eq. 'BUSSI') then
+            call bussi(istep,dt)
+         else if (integrate .eq. 'NOSE-HOOVER') then
+            call nose(istep,dt)
          else if (integrate .eq. 'GHMC') then
-            call ghmcstep (istep,dt)
+            call ghmcstep(istep,dt)
          else if (integrate .eq. 'RIGIDBODY') then
-            call rgdstep (istep,dt)
+            call rgdstep(istep,dt)
          else if (integrate .eq. 'RESPA') then
-            call respa (istep,dt)
+            call respa(istep,dt)
          else
-            call beeman (istep,dt)
-         end if
-      end do
-c
-c     perform any final tasks before program exit
-c
+            call beeman(istep,dt)
+         endif
+
+c        Calculate perturbed energies
+         if (pert_exist) then
+            call calcpe(istep, pert_k, pert_nk)
+         endif
+         if (fpert_exist) then
+            call calcfpe(istep, fpert_k, fpert_nk)
+         endif
+         if (bpert_exist) then
+            call calcbpe(istep, bpert_k, bpert_nk)
+         endif
+      enddo
+
+c     Final tasks
       call final
+      end
+
+c     Subroutine to calculate PE with pert.key
+      subroutine calcpe(istep, keylines, nkeys)
+      use sizes
+      use atoms
+      use analyz
+      use potent
+      use keys
+      implicit none
+      integer istep
+      character*120 keylines(25000)
+      integer nkeys
+      real*8 pe_perturbed
+      integer iunit
+      logical file_exists
+      real*8 energy
+      character*120 orig_key(25000)
+      integer orig_nk
+      logical first_call
+      save orig_key, orig_nk, first_call
+      data first_call /.true./
+
+      if (first_call) then
+         call savekeys(orig_key, orig_nk)
+         first_call = .false.
+      endif
+
+      inquire(file='pe.log', exist=file_exists)
+      if (file_exists) then
+         iunit = 30
+         open(unit=iunit, file='pe.log', status='old',
+     &     position='append')
+      else
+         iunit = 30
+         open(unit=iunit, file='pe.log', status='new')
+         write(iunit, '(A)') "step  PE_perturbed"
+      endif
+
+      call loadkeys(keylines, nkeys)
+      call mechanic 
+      pe_perturbed = energy()
+      call restorekeys(orig_key, orig_nk)
+
+      write(iunit, '(I5, F16.8)') istep, pe_perturbed
+      close(iunit)
+      end
+
+c     Subroutine to calculate FPE with fpert.key
+      subroutine calcfpe(istep, keylines, nkeys)
+      use sizes
+      use atoms
+      use analyz
+      use potent
+      use keys
+      implicit none
+      integer istep
+      character*120 keylines(25000)
+      integer nkeys
+      real*8 pe_perturbed
+      integer iunit
+      logical file_exists
+      real*8 energy
+      character*120 orig_key(25000)
+      integer orig_nk
+      logical first_call
+      save orig_key, orig_nk, first_call
+      data first_call /.true./
+
+      if (first_call) then
+         call savekeys(orig_key, orig_nk)
+         first_call = .false.
+      endif
+
+      inquire(file='fpe.log', exist=file_exists)
+      if (file_exists) then
+         iunit = 30
+         open(unit=iunit, file='fpe.log', status='old',
+     &     position='append')
+      else
+         iunit = 30
+         open(unit=iunit, file='fpe.log', status='new')
+         write(iunit, '(A)') "step  PE_perturbed"
+      endif
+
+      call loadkeys(keylines, nkeys)
+      call mechanic 
+      pe_perturbed = energy()
+      call restorekeys(orig_key, orig_nk)
+
+      write(iunit, '(I5, F16.8)') istep, pe_perturbed
+      close(iunit)
+      end
+
+c     Subroutine to calculate BPE with bpert.key
+      subroutine calcbpe(istep, keylines, nkeys)
+      use sizes
+      use atoms
+      use analyz
+      use potent
+      use keys
+      implicit none
+      integer istep
+      character*120 keylines(25000)
+      integer nkeys
+      real*8 pe_perturbed
+      integer iunit
+      logical file_exists
+      real*8 energy
+      character*120 orig_key(25000)
+      integer orig_nk
+      logical first_call
+      save orig_key, orig_nk, first_call
+      data first_call /.true./
+
+      if (first_call) then
+         call savekeys(orig_key, orig_nk)
+         first_call = .false.
+      endif
+
+      inquire(file='bpe.log', exist=file_exists)
+      if (file_exists) then
+         iunit = 30
+         open(unit=iunit, file='bpe.log', status='old',
+     &     position='append')
+      else
+         iunit = 30
+         open(unit=iunit, file='bpe.log', status='new')
+         write(iunit, '(A)') "step  PE_perturbed"
+      endif
+
+      call loadkeys(keylines, nkeys)
+      call mechanic 
+      pe_perturbed = energy()
+      call restorekeys(orig_key, orig_nk)
+
+      write(iunit, '(I5, F16.8)') istep, pe_perturbed
+      close(iunit)
+      end
+
+c     Subroutine to save current key state
+      subroutine savekeys(saved_key, saved_nk)
+      use keys
+      implicit none
+      character*120 saved_key(25000)
+      integer saved_nk
+      integer i
+
+      saved_nk = nkey
+      do i = 1, nkey
+         saved_key(i) = keyline(i)
+      enddo
+      end
+
+c     Subroutine to load key file into memory
+      subroutine loadk(filename, memory, nkeys)
+      implicit none
+      character*(*) filename
+      character*120 memory(25000)
+      integer nkeys
+      integer i, ios
+
+      open(unit=20, file=filename, status='old', iostat=ios)
+      if (ios .ne. 0) then
+         print *, "Error opening ", filename
+         stop
+      endif
+
+      nkeys = 0
+      do i = 1, 25000
+         read(20, '(A)', iostat=ios) memory(i)
+         if (ios .ne. 0) exit
+         nkeys = nkeys + 1
+      enddo
+      close(20)
+      end
+
+c     Subroutine to load keys from memory
+      subroutine loadkeys(memory, nkeys)
+      use keys
+      implicit none
+      character*120 memory(25000)
+      integer nkeys
+      integer i
+
+      nkey = nkeys
+      do i = 1, nkey
+         keyline(i) = memory(i)
+      enddo
+      end
+
+c     Subroutine to restore original key state
+      subroutine restorekeys(saved_key, saved_nk)
+      use keys
+      implicit none
+      character*120 saved_key(25000)
+      integer saved_nk
+      integer i
+
+      nkey = saved_nk
+      do i = 1, nkey
+         keyline(i) = saved_key(i)
+      enddo
+      call mechanic
       end
